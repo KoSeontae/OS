@@ -3,7 +3,6 @@
 #include <pthread.h>
 #include <sys/time.h>
 
-// Data structure for each thread’s work on computing part of M1 = Q * Kᵀ.
 typedef struct {
     int start;      // first row (inclusive)
     int end;        // last row (exclusive)
@@ -18,15 +17,12 @@ int rQ, cQ, rK, cK, rV, cV;
 int **Q, **K, **V;
 int **M1, **result;
 
-// Thread function: compute M1 for rows [start, end)
 void *compute_M1(void *arg) {
     ThreadData *data = (ThreadData*) arg;
-    for (int i = data->start; i < data->end; i++) {
-        for (int j = 0; j < data->rK; j++) {
+    for (int i = data->start; i < data->end; i++){
+        for (int j = 0; j < data->rK; j++){
             int sum = 0;
-            // Q is rQ x cQ and K is rK x cK (with cQ == cK); note that K[j][k] is used 
-            // because Q * Kᵀ (element [i][j]) is sum over k: Q[i][k] * K[j][k].
-            for (int k = 0; k < data->common; k++) {
+            for (int k = 0; k < data->common; k++){
                 sum += data->Q[i][k] * data->K[j][k];
             }
             data->M1[i][j] = sum;
@@ -38,49 +34,67 @@ void *compute_M1(void *arg) {
 int main(int argc, char *argv[]){
     if(argc < 2){
         fprintf(stderr, "Usage: %s total_thread_num\n", argv[0]);
-        exit(1);
+        exit(EXIT_FAILURE);
     }
     int total_threads = atoi(argv[1]);
     
-    // Read Q dimensions and its matrix.
-    scanf("%d %d", &rQ, &cQ);
+    // Read Q dimensions and matrix.
+    if (scanf("%d %d", &rQ, &cQ) != 2) {
+        fprintf(stderr, "Failed to read dimensions for Q.\n");
+        exit(EXIT_FAILURE);
+    }
     Q = malloc(rQ * sizeof(int *));
     for (int i = 0; i < rQ; i++){
         Q[i] = malloc(cQ * sizeof(int));
         for (int j = 0; j < cQ; j++){
-            scanf("%d", &Q[i][j]);
+            if (scanf("%d", &Q[i][j]) != 1) {
+                fprintf(stderr, "Failed to read Q[%d][%d].\n", i, j);
+                exit(EXIT_FAILURE);
+            }
         }
     }
     
-    // Read K dimensions and its matrix.
-    scanf("%d %d", &rK, &cK);
+    // Read K dimensions and matrix.
+    if (scanf("%d %d", &rK, &cK) != 2) {
+        fprintf(stderr, "Failed to read dimensions for K.\n");
+        exit(EXIT_FAILURE);
+    }
     if(cQ != cK){
         fprintf(stderr, "Dimension mismatch: Q columns (%d) must equal K columns (%d).\n", cQ, cK);
-        exit(1);
+        exit(EXIT_FAILURE);
     }
     K = malloc(rK * sizeof(int *));
     for (int i = 0; i < rK; i++){
         K[i] = malloc(cK * sizeof(int));
         for (int j = 0; j < cK; j++){
-            scanf("%d", &K[i][j]);
+            if (scanf("%d", &K[i][j]) != 1) {
+                fprintf(stderr, "Failed to read K[%d][%d].\n", i, j);
+                exit(EXIT_FAILURE);
+            }
         }
     }
     
-    // Read V dimensions and its matrix.
-    scanf("%d %d", &rV, &cV);
+    // Read V dimensions and matrix.
+    if (scanf("%d %d", &rV, &cV) != 2) {
+        fprintf(stderr, "Failed to read dimensions for V.\n");
+        exit(EXIT_FAILURE);
+    }
     if(rV != rK){
         fprintf(stderr, "Dimension mismatch: V rows (%d) must equal K rows (%d).\n", rV, rK);
-        exit(1);
+        exit(EXIT_FAILURE);
     }
     V = malloc(rV * sizeof(int *));
     for (int i = 0; i < rV; i++){
         V[i] = malloc(cV * sizeof(int));
         for (int j = 0; j < cV; j++){
-            scanf("%d", &V[i][j]);
+            if (scanf("%d", &V[i][j]) != 1) {
+                fprintf(stderr, "Failed to read V[%d][%d].\n", i, j);
+                exit(EXIT_FAILURE);
+            }
         }
     }
     
-    // Allocate M1 (dimensions: rQ x rK) and result (dimensions: rQ x cV).
+    // Allocate intermediate result matrix M1 and final result.
     M1 = malloc(rQ * sizeof(int *));
     for (int i = 0; i < rQ; i++){
         M1[i] = malloc(rK * sizeof(int));
@@ -90,11 +104,10 @@ int main(int argc, char *argv[]){
         result[i] = malloc(cV * sizeof(int));
     }
     
-    // Start the timer.
     struct timeval start, end;
     gettimeofday(&start, NULL);
     
-    // Create threads to compute M1.
+    // Create threads for computing M1 = Q * Kᵀ.
     pthread_t threads[total_threads];
     ThreadData thread_data[total_threads];
     int rows_per_thread = rQ / total_threads;
@@ -106,20 +119,23 @@ int main(int argc, char *argv[]){
         int end_row = start_row + num_rows;
         thread_data[i].start = start_row;
         thread_data[i].end = end_row;
-        thread_data[i].common = cQ;   // common dimension (Q columns)
-        thread_data[i].rK = rK;       // number of rows in K (columns of M1)
+        thread_data[i].common = cQ;
+        thread_data[i].rK = rK;
         thread_data[i].Q = Q;
         thread_data[i].K = K;
         thread_data[i].M1 = M1;
         current_row = end_row;
-        pthread_create(&threads[i], NULL, compute_M1, (void*)&thread_data[i]);
+        if(pthread_create(&threads[i], NULL, compute_M1, (void*)&thread_data[i]) != 0){
+            perror("Error creating thread");
+            exit(EXIT_FAILURE);
+        }
     }
     
     for(int i = 0; i < total_threads; i++){
         pthread_join(threads[i], NULL);
     }
     
-    // Compute the final result: result = M1 * V.
+    // Compute final result = M1 * V.
     for (int i = 0; i < rQ; i++){
         for (int j = 0; j < cV; j++){
             int sum = 0;
@@ -130,11 +146,10 @@ int main(int argc, char *argv[]){
         }
     }
     
-    // End timer and calculate elapsed time in milliseconds.
     gettimeofday(&end, NULL);
     long elapsed_ms = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) / 1000;
     
-    // Output latency and the resulting matrix.
+    // Output latency and result.
     printf("%ld\n", elapsed_ms);
     for (int i = 0; i < rQ; i++){
         for (int j = 0; j < cV; j++){
@@ -143,7 +158,7 @@ int main(int argc, char *argv[]){
         printf("\n");
     }
     
-    // Free allocated memory.
+    // Free memory.
     for (int i = 0; i < rQ; i++){
         free(Q[i]);
         free(M1[i]);

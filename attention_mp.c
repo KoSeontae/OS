@@ -11,49 +11,67 @@ int **M1, **result;
 int main(int argc, char *argv[]){
     if(argc < 2){
         fprintf(stderr, "Usage: %s total_process_num\n", argv[0]);
-        exit(1);
+        exit(EXIT_FAILURE);
     }
     int total_processes = atoi(argv[1]);
 
     // Read matrix Q.
-    scanf("%d %d", &rQ, &cQ);
+    if(scanf("%d %d", &rQ, &cQ) != 2){
+        fprintf(stderr, "Failed to read dimensions for Q.\n");
+        exit(EXIT_FAILURE);
+    }
     Q = malloc(rQ * sizeof(int *));
     for (int i = 0; i < rQ; i++){
         Q[i] = malloc(cQ * sizeof(int));
         for (int j = 0; j < cQ; j++){
-            scanf("%d", &Q[i][j]);
+            if(scanf("%d", &Q[i][j]) != 1){
+                fprintf(stderr, "Failed to read Q[%d][%d].\n", i, j);
+                exit(EXIT_FAILURE);
+            }
         }
     }
 
     // Read matrix K.
-    scanf("%d %d", &rK, &cK);
+    if(scanf("%d %d", &rK, &cK) != 2){
+        fprintf(stderr, "Failed to read dimensions for K.\n");
+        exit(EXIT_FAILURE);
+    }
     if(cQ != cK){
         fprintf(stderr, "Dimension mismatch: Q columns (%d) must equal K columns (%d).\n", cQ, cK);
-        exit(1);
+        exit(EXIT_FAILURE);
     }
     K = malloc(rK * sizeof(int *));
     for (int i = 0; i < rK; i++){
         K[i] = malloc(cK * sizeof(int));
         for (int j = 0; j < cK; j++){
-            scanf("%d", &K[i][j]);
+            if(scanf("%d", &K[i][j]) != 1){
+                fprintf(stderr, "Failed to read K[%d][%d].\n", i, j);
+                exit(EXIT_FAILURE);
+            }
         }
     }
 
     // Read matrix V.
-    scanf("%d %d", &rV, &cV);
+    if(scanf("%d %d", &rV, &cV) != 2){
+        fprintf(stderr, "Failed to read dimensions for V.\n");
+        exit(EXIT_FAILURE);
+    }
     if(rV != rK){
         fprintf(stderr, "Dimension mismatch: V rows (%d) must equal K rows (%d).\n", rV, rK);
-        exit(1);
+        exit(EXIT_FAILURE);
     }
     V = malloc(rV * sizeof(int *));
     for (int i = 0; i < rV; i++){
         V[i] = malloc(cV * sizeof(int));
         for (int j = 0; j < cV; j++){
-            scanf("%d", &V[i][j]);
+            if(scanf("%d", &V[i][j]) != 1){
+                fprintf(stderr, "Failed to read V[%d][%d].\n", i, j);
+                exit(EXIT_FAILURE);
+            }
         }
     }
 
-    // Allocate the intermediate result M1 (rQ x rK) and final result (rQ x cV).
+    // Allocate intermediate result M1 and final result.
     M1 = malloc(rQ * sizeof(int *));
     for (int i = 0; i < rQ; i++){
         M1[i] = malloc(rK * sizeof(int));
@@ -66,16 +84,15 @@ int main(int argc, char *argv[]){
     struct timeval start, end;
     gettimeofday(&start, NULL);
 
-    // Determine the rows per process.
+    // Determine rows per process.
     int rows_per_proc = rQ / total_processes;
     int extra = rQ % total_processes;
     
-    // Create an array of pipes for each process.
+    // Array of pipes and process IDs.
     int (*pipes)[2] = malloc(total_processes * sizeof(int[2]));
     pid_t *pids = malloc(total_processes * sizeof(pid_t));
     int current_row = 0;
 
-    // Fork processes and have each compute its assigned rows of M1 = Q * Kᵀ.
     for (int i = 0; i < total_processes; i++){
         int start_row = current_row;
         int num_rows = rows_per_proc + (i < extra ? 1 : 0);
@@ -84,58 +101,56 @@ int main(int argc, char *argv[]){
 
         if(pipe(pipes[i]) == -1){
             perror("pipe");
-            exit(1);
+            exit(EXIT_FAILURE);
         }
 
         pids[i] = fork();
         if(pids[i] < 0){
             perror("fork");
-            exit(1);
+            exit(EXIT_FAILURE);
         }
         if(pids[i] == 0){
-            // Child process: compute M1 for rows [start_row, end_row)
+            // Child: compute M1 for rows [start_row, end_row).
             for (int i_row = start_row; i_row < end_row; i_row++){
                 for (int j = 0; j < rK; j++){
                     int sum = 0;
-                    // Note: Q is rQ x cQ and K is rK x cK, and we need Kᵀ so we use K[j][k].
                     for (int k = 0; k < cQ; k++){
                         sum += Q[i_row][k] * K[j][k];
                     }
                     M1[i_row][j] = sum;
                 }
             }
-            // Write the computed rows of M1 into the pipe.
+            // Write computed rows into the pipe.
             for (int i_row = start_row; i_row < end_row; i_row++){
                 if(write(pipes[i][1], M1[i_row], rK * sizeof(int)) != rK * sizeof(int)){
                     perror("write");
-                    exit(1);
+                    exit(EXIT_FAILURE);
                 }
             }
             close(pipes[i][1]);
-            exit(0);
+            exit(EXIT_SUCCESS);
         } else {
-            // Parent process: close the write end.
+            // Parent: Close child's write end.
             close(pipes[i][1]);
         }
     }
-
-    // In the parent, collect computed rows from each child.
+    
+    // Collect computed rows.
     current_row = 0;
     for (int i = 0; i < total_processes; i++){
         int rows_for_proc = rows_per_proc + (i < extra ? 1 : 0);
-        // Wait for the child process to finish.
-        wait(NULL);
+        wait(NULL);  // Wait for child to finish.
         for (int r = 0; r < rows_for_proc; r++){
             if(read(pipes[i][0], M1[current_row], rK * sizeof(int)) != rK * sizeof(int)){
                 fprintf(stderr, "Error reading from pipe for row %d\n", current_row);
-                exit(1);
+                exit(EXIT_FAILURE);
             }
             current_row++;
         }
         close(pipes[i][0]);
     }
     
-    // Compute the final result: result = M1 * V.
+    // Compute final result: result = M1 * V.
     for (int i = 0; i < rQ; i++){
         for (int j = 0; j < cV; j++){
             int sum = 0;
@@ -149,7 +164,7 @@ int main(int argc, char *argv[]){
     gettimeofday(&end, NULL);
     long elapsed_ms = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) / 1000;
     
-    // Output the latency and the final result matrix.
+    // Output latency and final matrix.
     printf("%ld\n", elapsed_ms);
     for (int i = 0; i < rQ; i++){
         for (int j = 0; j < cV; j++){
@@ -158,7 +173,7 @@ int main(int argc, char *argv[]){
         printf("\n");
     }
 
-    // Free all allocated memory.
+    // Free allocated memory.
     for (int i = 0; i < rQ; i++){
         free(Q[i]);
         free(M1[i]);
